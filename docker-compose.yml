@@ -1,0 +1,19 @@
+services:
+  whatsapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: whatsapp-mcp:latest
+    container_name: whatsapp-mcp
+    ports:
+      # Login control API (used by the QR page) — localhost only.
+      - "127.0.0.1:8080:8080"
+      # MCP streamable-http endpoint — localhost only (no auth). Host 8001.
+      - "127.0.0.1:8001:8000"
+    volumes:
+      # Persist the WhatsApp session, message history, and media.
+      - whatsapp-store:/app/whatsapp-mcp-server/store
+    restart: unless-stopped
+
+volumes:
+  whatsapp-store:

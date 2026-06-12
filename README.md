@@ -14,6 +14,29 @@ Here's an example of what you can do when it's connected to Claude.
 
 > *Caution:* as with many MCP servers, the WhatsApp MCP is subject to [the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). This means that project injection could lead to private data exfiltration.
 
+## What's different in this fork
+
+This fork rewrites the project into a **single, dockerized Python service** (no separate Go process):
+
+- **One container, one language.** The WhatsApp bridge is reimplemented in Python on [neonize](https://github.com/krypton-byte/neonize) (which embeds `whatsmeow`), running in a background thread inside the same process as the MCP server. No Go toolchain, no CGO, no `localhost` HTTP hop between components.
+- **Dockerized.** `docker compose up -d --build` builds and runs everything. Session + message history persist in a named volume.
+- **On-demand pairing.** The bridge does **not** generate QR codes on startup — it idles until you ask it to pair (`POST /api/login`), so an unattended instance never racks up WhatsApp linking attempts.
+- **Browser QR page.** A small helper (`qr-server.py`) serves the rotating pairing QR at `http://localhost:8765` with explicit Generate/Stop buttons.
+- **Streamable-HTTP MCP.** The MCP server runs as a persistent endpoint at `http://localhost:8001/mcp` (configurable; `stdio` still supported via `MCP_TRANSPORT`).
+- **Contact/group name resolution + history sync** so chats show real names and recent history is backfilled on link.
+
+### Quick start (this fork)
+
+```bash
+docker compose up -d --build          # build + run the single container
+python qr-server.py                   # serve the QR page (needs: pip install "qrcode[pil]")
+# open http://localhost:8765 -> Generate QR code -> scan with WhatsApp
+```
+
+Then point your MCP client at `http://localhost:8001/mcp` (Cursor: `{"url": "..."}`; Claude Desktop: add as a custom connector or via `mcp-remote`).
+
+The original two-process (Go bridge + Python server) instructions below are kept for reference but are superseded by the Docker setup.
+
 ## Installation
 
 ### Prerequisites
@@ -84,7 +107,49 @@ Here's an example of what you can do when it's connected to Claude.
 
    Or restart Cursor.
 
+### Running with Docker
+
+A `Dockerfile` and `docker-compose.yml` are included so you can run the bridge without installing Go, Python, UV, or FFmpeg locally. The image builds the Go bridge (with CGO) and bundles the Python MCP server in a single container.
+
+1. **Build and start the bridge**
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+2. **Scan the QR code (first run / re-authentication)**
+
+   The QR code is printed to the container's output. Attach to it to scan:
+
+   ```bash
+   docker attach whatsapp-mcp
+   ```
+
+   Scan the QR with your WhatsApp app, then detach with `Ctrl-P` `Ctrl-Q` (this leaves the container running — `Ctrl-C` would stop it). The session is persisted in the `whatsapp-store` volume, so you won't need to re-scan on restart.
+
+3. **Connect the MCP server**
+
+   The MCP server speaks over stdio, so your client launches it on demand inside the running container. Use this config instead of the `uv` command shown above:
+
+   ```json
+   {
+     "mcpServers": {
+       "whatsapp": {
+         "command": "docker",
+         "args": [
+           "exec", "-i", "whatsapp-mcp",
+           "uv", "--directory", "/app/whatsapp-mcp-server", "run", "main.py"
+         ]
+       }
+     }
+   }
+   ```
+
+To view logs use `docker compose logs -f`, and to stop the bridge use `docker compose down` (the volume — and your login — is preserved).
+
 ### Windows Compatibility
+
+> **Note:** The Docker setup above sidesteps the CGO toolchain entirely, so on Windows you can skip this section unless you want to run the bridge natively.
 
 If you're running this project on Windows, be aware that `go-sqlite3` requires **CGO to be enabled** in order to compile and work properly. By default, **CGO is disabled on Windows**, so you need to explicitly enable it and have a C compiler installed.
 

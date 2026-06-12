@@ -1,0 +1,8 @@
+.git
+*.md
+example-use.png
+**/store
+**/*.db
+**/.venv
+whatsapp.log
+claude_desktop_config.json
