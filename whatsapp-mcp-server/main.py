@@ -12,7 +12,10 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    create_group as whatsapp_create_group,
+    create_channel as whatsapp_create_channel,
+    update_group_participants as whatsapp_update_group_participants
 )
 
 # Initialize FastMCP server. host/port matter only for the streamable-http
@@ -264,6 +267,72 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def create_group(name: str, participants: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Create a new WhatsApp group.
+
+    By default the group is created empty (just you as admin) and an invite link
+    is returned, so you can share it rather than adding people without consent.
+
+    Args:
+        name: The name/subject of the new group
+        participants: Optional list of phone numbers (country code, no +) or JIDs
+                      to add immediately. Omit to create an empty group.
+
+    Returns:
+        A dictionary with success status, a message, and (on success) the group
+        JID, name, invite_link, and number of participants added.
+    """
+    if not name:
+        return {"success": False, "message": "Group name must be provided"}
+    success, status_message, info = whatsapp_create_group(name, participants)
+    result = {"success": success, "message": status_message}
+    if info:
+        result.update(info)
+    return result
+
+@mcp.tool()
+def create_channel(name: str, description: str = "") -> Dict[str, Any]:
+    """Create a new WhatsApp Channel (a one-way broadcast feed / newsletter).
+
+    Args:
+        name: The name of the channel
+        description: Optional channel description
+
+    Returns:
+        A dictionary with success status, a message, and (on success) the
+        channel id and name.
+    """
+    if not name:
+        return {"success": False, "message": "Channel name must be provided"}
+    success, status_message, info = whatsapp_create_channel(name, description)
+    result = {"success": success, "message": status_message}
+    if info:
+        result.update(info)
+    return result
+
+@mcp.tool()
+def update_group_participants(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
+    """Add, remove, promote, or demote participants in an existing WhatsApp group.
+
+    Args:
+        group_jid: The JID of the group (e.g. "123...@g.us")
+        participants: List of phone numbers (country code, no +) or JIDs to change
+        action: One of "add", "remove", "promote", "demote"
+
+    Returns:
+        A dictionary with success status and a status message.
+    """
+    if not group_jid:
+        return {"success": False, "message": "Group JID must be provided"}
+    if not participants:
+        return {"success": False, "message": "At least one participant must be provided"}
+    success, status_message, info = whatsapp_update_group_participants(group_jid, participants, action)
+    result = {"success": success, "message": status_message}
+    if info:
+        result.update(info)
+    return result
 
 if __name__ == "__main__":
     # Start the neonize WhatsApp bridge (background thread + on-demand login

@@ -109,7 +109,8 @@ def _upsert_chat(jid: str, name: str, ts_str: str):
                 """INSERT INTO chats (jid, name, last_message_time)
                    VALUES (?, ?, ?)
                    ON CONFLICT(jid) DO UPDATE SET
-                       last_message_time=excluded.last_message_time,
+                       last_message_time=MAX(excluded.last_message_time,
+                                             chats.last_message_time),
                        name=COALESCE(NULLIF(excluded.name, ''), chats.name)""",
                 (jid, name or jid, ts_str),
             )
@@ -249,14 +250,22 @@ def _handle_history_sync(client, event: HistorySyncEv):
             if not chat_jid:
                 continue
             chat_name = _resolve_name(chat_jid) or conv.name or conv.displayName or ""
-            latest_ts = None
+            latest_raw_ts = None
             for hsm in conv.messages:
                 wmi = hsm.message
                 inner = wmi.message
                 if not inner or not inner.ByteSize():
                     continue
                 ts_str = _ts_to_str(wmi.messageTimestamp)
-                latest_ts = ts_str
+                # History-sync messages are not guaranteed to be in
+                # chronological order, so keep the maximum timestamp rather
+                # than whatever happens to be iterated last.
+                try:
+                    raw_ts = int(wmi.messageTimestamp)
+                    if latest_raw_ts is None or raw_ts > latest_raw_ts:
+                        latest_raw_ts = raw_ts
+                except (TypeError, ValueError):
+                    pass
                 key = wmi.key
                 is_from_me = bool(key.fromMe)
                 sender = key.participant or chat_jid
@@ -270,8 +279,8 @@ def _handle_history_sync(client, event: HistorySyncEv):
                 _store_message(key.ID, chat_jid, sender, text or "", ts_str,
                                is_from_me, media_type, filename, raw_blob)
                 total += 1
-            if latest_ts:
-                _upsert_chat(chat_jid, chat_name, latest_ts)
+            if latest_raw_ts is not None:
+                _upsert_chat(chat_jid, chat_name, _ts_to_str(latest_raw_ts))
         if total:
             print(f"[bridge] history sync: stored {total} messages "
                   f"across {len(convs)} conversations", flush=True)
@@ -481,6 +490,72 @@ def send_audio_msg(recipient: str, media_path: str) -> tuple[bool, str]:
         return True, "voice message sent"
     except Exception as e:
         return False, f"send failed: {e} (is ffmpeg installed?)"
+
+
+def create_group(recipient_name: str, participants=None) -> tuple[bool, str, "dict | None"]:
+    """Create a new WhatsApp group. participants is an optional list of phone
+    numbers / JIDs; if empty the group is created with just you (the admin),
+    and an invite link is returned so nobody is added without consent."""
+    if not _client or not _connected:
+        return False, "WhatsApp not connected (pair first via the login page)", None
+    if not recipient_name:
+        return False, "group name must be provided", None
+    try:
+        jids = [_to_jid(p) for p in (participants or []) if p]
+        info = _client.create_group(recipient_name, jids)
+        gjid = Jid2String(info.JID)
+        _upsert_chat(gjid, recipient_name, datetime.now().isoformat(sep=" "))
+        invite = ""
+        try:
+            invite = _client.get_group_invite_link(info.JID)
+        except Exception:
+            print("[bridge] invite-link fetch failed:\n" + traceback.format_exc(), flush=True)
+        return True, "group created", {
+            "jid": gjid,
+            "name": recipient_name,
+            "invite_link": invite,
+            "participants_added": len(jids),
+        }
+    except Exception as e:
+        return False, f"create failed: {e}", None
+
+
+def create_channel(recipient_name: str, description: str = "") -> tuple[bool, str, "dict | None"]:
+    """Create a new WhatsApp Channel (newsletter) — a one-way broadcast feed."""
+    if not _client or not _connected:
+        return False, "WhatsApp not connected (pair first via the login page)", None
+    if not recipient_name:
+        return False, "channel name must be provided", None
+    try:
+        meta = _client.create_newsletter(recipient_name, description or "", b"")
+        cid = getattr(meta, "ID", "") or getattr(meta, "id", "") or ""
+        return True, "channel created", {"id": str(cid), "name": recipient_name}
+    except Exception as e:
+        return False, f"create failed: {e}", None
+
+
+def update_group_participants(group_jid: str, participants, action: str) -> tuple[bool, str, "dict | None"]:
+    """Add / remove / promote / demote participants in a group.
+    action is one of: add, remove, promote, demote."""
+    if not _client or not _connected:
+        return False, "WhatsApp not connected (pair first via the login page)", None
+    if not group_jid or not participants:
+        return False, "group_jid and participants are required", None
+    action = (action or "").lower().strip()
+    if action not in ("add", "remove", "promote", "demote"):
+        return False, f"invalid action '{action}' (use add/remove/promote/demote)", None
+    try:
+        from neonize.utils.enum import ParticipantChange
+        gjid = _to_jid(group_jid)
+        jids = [_to_jid(p) for p in participants if p]
+        _client.update_group_participants(gjid, jids, ParticipantChange(action))
+        return True, f"{action} applied to {len(jids)} participant(s)", {
+            "group_jid": Jid2String(gjid),
+            "action": action,
+            "count": len(jids),
+        }
+    except Exception as e:
+        return False, f"update failed: {e}", None
 
 
 def download_media(message_id: str, chat_jid: str) -> "str | None":

@@ -650,3 +650,20 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path."""
     return whatsapp_bridge.download_media(message_id, chat_jid)
+
+def create_group(name: str, participants: Optional[List[str]] = None) -> Tuple[bool, str, Optional[dict]]:
+    if not name:
+        return False, "Group name must be provided", None
+    return whatsapp_bridge.create_group(name, participants)
+
+def create_channel(name: str, description: str = "") -> Tuple[bool, str, Optional[dict]]:
+    if not name:
+        return False, "Channel name must be provided", None
+    return whatsapp_bridge.create_channel(name, description)
+
+def update_group_participants(group_jid: str, participants: List[str], action: str) -> Tuple[bool, str, Optional[dict]]:
+    if not group_jid:
+        return False, "Group JID must be provided", None
+    if not participants:
+        return False, "At least one participant must be provided", None
+    return whatsapp_bridge.update_group_participants(group_jid, participants, action)
