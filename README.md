@@ -14,6 +14,10 @@ Here's an example of what you can do when it's connected to Claude.
 
 > *Caution:* as with many MCP servers, the WhatsApp MCP is subject to [the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). This means that project injection could lead to private data exfiltration.
 
+> ⚠️ **Mark Zuckerberg does not approve of this.** This project links to WhatsApp through the unofficial multidevice API rather than the official Business Platform, which puts it **against WhatsApp's Terms of Service**. Meta can act on accounts that automate the consumer app — most commonly a temporary block or a forced re-link, but in principle up to **permanent loss of your WhatsApp account**. A full ban is *very unlikely* for normal personal use, but it is **not outside Meta's power**, and there is no appeal you can count on.
+>
+> **If you point an AI/LLM at this:** the agent can *act* on your account — send messages, create groups, add people. A confused or prompt-injected agent doing this at machine speed is exactly the kind of behavior automated anti-abuse systems flag. Treat this as **your personal account on the line**: prefer a secondary/burner number, keep the agent's autonomy and send-rate low, review what it does, and don't run it unattended against your primary number. Use entirely at your own risk.
+
 ## What's different in this fork
 
 This fork rewrites the project into a **single, dockerized Python service** (no separate Go process):
