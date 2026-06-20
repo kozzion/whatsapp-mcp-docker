@@ -19,7 +19,7 @@ Here's an example of what you can do when it's connected to Claude.
 This fork rewrites the project into a **single, dockerized Python service** (no separate Go process):
 
 - **One container, one language.** The WhatsApp bridge is reimplemented in Python on [neonize](https://github.com/krypton-byte/neonize) (which embeds `whatsmeow`), running in a background thread inside the same process as the MCP server. No Go toolchain, no CGO, no `localhost` HTTP hop between components.
-- **Dockerized.** `docker compose up -d --build` builds and runs everything. Session + message history persist in a named volume.
+- **Dockerized.** `docker compose up -d --build` builds and runs everything. Session + message history persist in a host folder you choose (set `PATH_DIR_DATA_WHATSAPPMCP` in `.env`), bind-mounted into the container.
 - **On-demand pairing.** The bridge does **not** generate QR codes on startup — it idles until you ask it to pair (`POST /api/login`), so an unattended instance never racks up WhatsApp linking attempts.
 - **Browser QR page.** A small helper (`qr-server.py`) serves the rotating pairing QR at `http://localhost:8765` with explicit Generate/Stop buttons.
 - **Streamable-HTTP MCP.** The MCP server runs as a persistent endpoint at `http://localhost:8001/mcp` (configurable; `stdio` still supported via `MCP_TRANSPORT`).
@@ -28,162 +28,126 @@ This fork rewrites the project into a **single, dockerized Python service** (no 
 ### Quick start (this fork)
 
 ```bash
+cp .env.example .env                  # then set PATH_DIR_DATA_WHATSAPPMCP to an absolute host path
 docker compose up -d --build          # build + run the single container
-python qr-server.py                   # serve the QR page (needs: pip install "qrcode[pil]")
+
+# serve the QR pairing page (uv injects the one dependency, no global install):
+uv run --with "qrcode[pil]" python qr-server.py
 # open http://localhost:8765 -> Generate QR code -> scan with WhatsApp
 ```
 
 Then point your MCP client at `http://localhost:8001/mcp` (Cursor: `{"url": "..."}`; Claude Desktop: add as a custom connector or via `mcp-remote`).
 
-The original two-process (Go bridge + Python server) instructions below are kept for reference but are superseded by the Docker setup.
-
 ## Installation
 
 ### Prerequisites
 
-- Go
-- Python 3.6+
-- Anthropic Claude Desktop app (or Cursor)
-- UV (Python package manager), install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- FFmpeg (_optional_) - Only needed for audio messages. If you want to send audio files as playable WhatsApp voice messages, they must be in `.ogg` Opus format. With FFmpeg installed, the MCP server will automatically convert non-Opus audio files. Without FFmpeg, you can still send raw audio files using the `send_file` tool.
+- **Docker** (Docker Desktop, or Docker Engine + the Compose plugin). This is the only requirement to run the server itself — the image bundles Python, the neonize bridge, and FFmpeg.
+- An MCP client — the **Anthropic Claude Desktop app**, **Cursor**, or anything that speaks streamable-HTTP MCP.
+- To serve the QR pairing page: **Python 3** plus either [`uv`](https://docs.astral.sh/uv/) (recommended — `curl -LsSf https://astral.sh/uv/install.sh | sh`) or a local `pip install "qrcode[pil]"`.
+
+> FFmpeg is installed inside the image, so audio messages are transcoded to WhatsApp's Opus voice format automatically — no host install needed.
 
 ### Steps
 
 1. **Clone this repository**
 
    ```bash
-   git clone https://github.com/lharries/whatsapp-mcp.git
-   cd whatsapp-mcp
+   git clone https://github.com/kozzion/whatsapp-mcp-docker.git
+   cd whatsapp-mcp-docker
    ```
 
-2. **Run the WhatsApp bridge**
+2. **Choose where your data lives**
 
-   Navigate to the whatsapp-bridge directory and run the Go application:
+   Copy the example env file and set `PATH_DIR_DATA_WHATSAPPMCP` to an **absolute** host directory (use forward slashes on Windows). This folder holds your WhatsApp session, the message database, and any downloaded media:
 
    ```bash
-   cd whatsapp-bridge
-   go run main.go
+   cp .env.example .env
+   # edit .env, e.g. PATH_DIR_DATA_WHATSAPPMCP=/Users/you/data/whatsapp-mcp
    ```
 
-   The first time you run it, you will be prompted to scan a QR code. Scan the QR code with your WhatsApp mobile app to authenticate.
-
-   After approximately 20 days, you will might need to re-authenticate.
-
-3. **Connect to the MCP server**
-
-   Copy the below json with the appropriate {{PATH}} values:
-
-   ```json
-   {
-     "mcpServers": {
-       "whatsapp": {
-         "command": "{{PATH_TO_UV}}", // Run `which uv` and place the output here
-         "args": [
-           "--directory",
-           "{{PATH_TO_SRC}}/whatsapp-mcp/whatsapp-mcp-server", // cd into the repo, run `pwd` and enter the output here + "/whatsapp-mcp-server"
-           "run",
-           "main.py"
-         ]
-       }
-     }
-   }
-   ```
-
-   For **Claude**, save this as `claude_desktop_config.json` in your Claude Desktop configuration directory at:
-
-   ```
-   ~/Library/Application Support/Claude/claude_desktop_config.json
-   ```
-
-   For **Cursor**, save this as `mcp.json` in your Cursor configuration directory at:
-
-   ```
-   ~/.cursor/mcp.json
-   ```
-
-4. **Restart Claude Desktop / Cursor**
-
-   Open Claude Desktop and you should now see WhatsApp as an available integration.
-
-   Or restart Cursor.
-
-### Running with Docker
-
-A `Dockerfile` and `docker-compose.yml` are included so you can run the bridge without installing Go, Python, UV, or FFmpeg locally. The image builds the Go bridge (with CGO) and bundles the Python MCP server in a single container.
-
-1. **Build and start the bridge**
+3. **Build and start the container**
 
    ```bash
    docker compose up -d --build
    ```
 
-2. **Scan the QR code (first run / re-authentication)**
+   This starts the MCP endpoint on `http://localhost:8001/mcp` and the login control API on `http://localhost:8080` (both bound to `127.0.0.1` only). On startup the bridge **does not** generate a QR code — it waits for you to pair.
 
-   The QR code is printed to the container's output. Attach to it to scan:
+4. **Pair your WhatsApp (first run / re-authentication)**
+
+   Start the QR page and open it in your browser:
 
    ```bash
-   docker attach whatsapp-mcp
+   uv run --with "qrcode[pil]" python qr-server.py
+   # open http://localhost:8765
    ```
 
-   Scan the QR with your WhatsApp app, then detach with `Ctrl-P` `Ctrl-Q` (this leaves the container running — `Ctrl-C` would stop it). The session is persisted in the `whatsapp-store` volume, so you won't need to re-scan on restart.
+   Click **Generate QR code**, then on your phone go to **WhatsApp → Settings → Linked Devices → Link a Device** and scan. The code rotates every ~20s; click **Stop** as soon as you're paired (each displayed code is a fresh linking attempt, and too many in a row makes WhatsApp say "couldn't link device, try again later").
 
-3. **Connect the MCP server**
+   The session is saved to your data folder, so subsequent restarts reconnect automatically without re-scanning.
 
-   The MCP server speaks over stdio, so your client launches it on demand inside the running container. Use this config instead of the `uv` command shown above:
+5. **Connect your MCP client**
 
-   ```json
-   {
-     "mcpServers": {
-       "whatsapp": {
-         "command": "docker",
-         "args": [
-           "exec", "-i", "whatsapp-mcp",
-           "uv", "--directory", "/app/whatsapp-mcp-server", "run", "main.py"
-         ]
+   The server speaks **streamable-HTTP** at `http://localhost:8001/mcp`.
+
+   - **Cursor** (`~/.cursor/mcp.json`):
+
+     ```json
+     {
+       "mcpServers": {
+         "whatsapp": { "url": "http://localhost:8001/mcp" }
        }
      }
-   }
-   ```
+     ```
 
-To view logs use `docker compose logs -f`, and to stop the bridge use `docker compose down` (the volume — and your login — is preserved).
+   - **Claude Desktop**: add it as a custom connector pointing at `http://localhost:8001/mcp`, or bridge it with [`mcp-remote`](https://github.com/geelen/mcp-remote):
 
-### Windows Compatibility
+     ```json
+     {
+       "mcpServers": {
+         "whatsapp": {
+           "command": "npx",
+           "args": ["mcp-remote", "http://localhost:8001/mcp"]
+         }
+       }
+     }
+     ```
 
-> **Note:** The Docker setup above sidesteps the CGO toolchain entirely, so on Windows you can skip this section unless you want to run the bridge natively.
+   Restart your client and WhatsApp will appear as an available integration.
 
-If you're running this project on Windows, be aware that `go-sqlite3` requires **CGO to be enabled** in order to compile and work properly. By default, **CGO is disabled on Windows**, so you need to explicitly enable it and have a C compiler installed.
-
-#### Steps to get it working:
-
-1. **Install a C compiler**  
-   We recommend using [MSYS2](https://www.msys2.org/) to install a C compiler for Windows. After installing MSYS2, make sure to add the `ucrt64\bin` folder to your `PATH`.  
-   → A step-by-step guide is available [here](https://code.visualstudio.com/docs/cpp/config-mingw).
-
-2. **Enable CGO and run the app**
-
-   ```bash
-   cd whatsapp-bridge
-   go env -w CGO_ENABLED=1
-   go run main.go
-   ```
-
-Without this setup, you'll likely run into errors like:
-
-> `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work.`
+To view logs use `docker compose logs -f`, and to stop the server use `docker compose down`. Your data folder is on the host, so your login and history are preserved across `down`/`up` and rebuilds.
 
 ## Architecture Overview
 
-This application consists of two main components:
+Everything runs in **one process inside one container**:
 
-1. **Go WhatsApp Bridge** (`whatsapp-bridge/`): A Go application that connects to WhatsApp's web API, handles authentication via QR code, and stores message history in SQLite. It serves as the bridge between WhatsApp and the MCP server.
+1. **WhatsApp bridge** (`whatsapp-mcp-server/whatsapp_bridge.py`): connects to WhatsApp's web API via [neonize](https://github.com/krypton-byte/neonize) (which embeds `whatsmeow`) on a background thread, handles on-demand pairing, persists incoming messages and history-sync backfill to SQLite, resolves contact/group names, and performs sending/downloading. It also exposes a small HTTP control API (`/api/login`, `/api/logout`, `/api/status`) used by the QR page.
 
-2. **Python MCP Server** (`whatsapp-mcp-server/`): A Python server implementing the Model Context Protocol (MCP), which provides standardized tools for Claude to interact with WhatsApp data and send/receive messages.
+2. **Python MCP server** (`whatsapp-mcp-server/main.py`): a [FastMCP](https://github.com/modelcontextprotocol/python-sdk) server exposing the tools below over streamable-HTTP. It reads WhatsApp data through `whatsapp.py`, a thin query layer over the same SQLite database the bridge writes.
+
+3. **QR page** (`qr-server.py`): a host-side helper that tails the container logs for the rotating pairing code and renders it as a PNG at `http://localhost:8765`. Run it only while pairing.
 
 ### Data Storage
 
-- All message history is stored in a SQLite database within the `whatsapp-bridge/store/` directory
-- The database maintains tables for chats and messages
-- Messages are indexed for efficient searching and retrieval
+- All runtime state lives in the host directory set by `PATH_DIR_DATA_WHATSAPPMCP`, bind-mounted to `/app/whatsapp-mcp-server/store` in the container.
+- `session.db` — the WhatsApp device session (written on link; its presence is what lets the bridge auto-resume).
+- `messages.db` — `chats`, `contacts`, and `messages` tables, indexed for search.
+- `<chat_jid>/…` — subfolders holding media you've explicitly downloaded via `download_media`.
+
+Because it's a host bind mount (not a named volume), this data survives `docker compose down`, rebuilds, and image deletion — only removing the folder itself wipes it.
+
+### Configuration
+
+These are set in `docker-compose.yml` / the `Dockerfile` and rarely need changing:
+
+| Variable | Default (in container) | Purpose |
+| --- | --- | --- |
+| `PATH_DIR_DATA_WHATSAPPMCP` | _(required, set in `.env`)_ | Host directory bind-mounted to the store |
+| `MCP_TRANSPORT` | `streamable-http` | MCP transport (`stdio` also supported) |
+| `FASTMCP_HOST` / `FASTMCP_PORT` | `0.0.0.0` / `8000` | Bind address/port for the MCP endpoint |
+| `WHATSAPP_STORE_DIR` | `/app/whatsapp-mcp-server/store` | Where the bridge reads/writes data |
+| `WHATSAPP_CONTROL_PORT` | `8080` | Port for the login control API |
 
 ## Usage
 
@@ -203,8 +167,11 @@ Claude can access the following tools to interact with WhatsApp:
 - **get_message_context**: Retrieve context around a specific message
 - **send_message**: Send a WhatsApp message to a specified phone number or group JID
 - **send_file**: Send a file (image, video, raw audio, document) to a specified recipient
-- **send_audio_message**: Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed)
+- **send_audio_message**: Send an audio file as a WhatsApp voice message (transcoded to Opus via the bundled FFmpeg)
 - **download_media**: Download media from a WhatsApp message and get the local file path
+- **create_group**: Create a new WhatsApp group (empty by default, returning an invite link; optionally add participants)
+- **create_channel**: Create a new WhatsApp Channel (a one-way broadcast feed)
+- **update_group_participants**: Add, remove, promote, or demote participants in an existing group
 
 ### Media Handling Features
 
@@ -215,34 +182,20 @@ The MCP server supports both sending and receiving various media types:
 You can send various media types to your WhatsApp contacts:
 
 - **Images, Videos, Documents**: Use the `send_file` tool to share any supported media type.
-- **Voice Messages**: Use the `send_audio_message` tool to send audio files as playable WhatsApp voice messages.
-  - For optimal compatibility, audio files should be in `.ogg` Opus format.
-  - With FFmpeg installed, the system will automatically convert other audio formats (MP3, WAV, etc.) to the required format.
-  - Without FFmpeg, you can still send raw audio files using the `send_file` tool, but they won't appear as playable voice messages.
+- **Voice Messages**: Use the `send_audio_message` tool to send audio files as playable WhatsApp voice messages. FFmpeg ships in the image, so non-Opus audio (MP3, WAV, etc.) is converted automatically; you can also send raw audio with `send_file`, but it won't appear as a playable voice message.
 
 #### Media Downloading
 
-By default, just the metadata of the media is stored in the local database. The message will indicate that media was sent. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the meda), this downloads the media and then returns the file path which can be then opened or passed to another tool.
-
-## Technical Details
-
-1. Claude sends requests to the Python MCP server
-2. The MCP server queries the Go bridge for WhatsApp data or directly to the SQLite database
-3. The Go accesses the WhatsApp API and keeps the SQLite database up to date
-4. Data flows back through the chain to Claude
-5. When sending messages, the request flows from Claude through the MCP server to the Go bridge and to WhatsApp
+By default, just the metadata of the media is stored in the local database. The message will indicate that media was sent. To access this media you need to use the `download_media` tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the media); this downloads the media into your data folder and returns the file path, which can then be opened or passed to another tool.
 
 ## Troubleshooting
 
-- If you encounter permission issues when running uv, you may need to add it to your PATH or use the full path to the executable.
-- Make sure both the Go application and the Python server are running for the integration to work properly.
-
-### Authentication Issues
-
-- **QR Code Not Displaying**: If the QR code doesn't appear, try restarting the authentication script. If issues persist, check if your terminal supports displaying QR codes.
-- **WhatsApp Already Logged In**: If your session is already active, the Go bridge will automatically reconnect without showing a QR code.
-- **Device Limit Reached**: WhatsApp limits the number of linked devices. If you reach this limit, you'll need to remove an existing device from WhatsApp on your phone (Settings > Linked Devices).
-- **No Messages Loading**: After initial authentication, it can take several minutes for your message history to load, especially if you have many chats.
-- **WhatsApp Out of Sync**: If your WhatsApp messages get out of sync with the bridge, delete both database files (`whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`) and restart the bridge to re-authenticate.
+- **`PATH_DIR_DATA_WHATSAPPMCP` not set**: Compose will refuse to start. Copy `.env.example` to `.env` and set an absolute path.
+- **QR code not appearing**: Make sure the container is running (`docker compose ps`) and the QR page is up (`uv run --with "qrcode[pil]" python qr-server.py`). The page only shows a code after you click **Generate** — pairing is on-demand by design. The page reads the code from the container logs, so it must run on the same host as Docker.
+- **"Couldn't link device, try again later"**: too many linking attempts in a short window. Wait a few minutes, then click **Generate** once and scan promptly.
+- **Already logged in**: if a valid `session.db` exists, the bridge reconnects automatically on startup — no QR needed. Check `curl http://localhost:8080/api/status`.
+- **Device limit reached**: WhatsApp limits linked devices. Remove one from your phone (Settings → Linked Devices).
+- **No messages loading**: after initial pairing, history sync can take several minutes, especially with many chats. Watch `docker compose logs -f` for `history sync: stored N messages`.
+- **WhatsApp out of sync**: stop the container (`docker compose down`), delete `session.db` and `messages.db` from your data folder, start again, and re-pair.
 
 For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues). The documentation includes helpful tips for checking logs and resolving common issues.
